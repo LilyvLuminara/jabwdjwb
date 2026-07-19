@@ -26,7 +26,6 @@ module.exports = async (req, res) => {
             return res.status(400).json({ success: false, error: 'fileData is required' });
         }
 
-        // Clean Base64
         const cleanBase64 = fileData.replace(/\s/g, '').replace(/\n/g, '').replace(/\r/g, '');
         const fileBuffer = Buffer.from(cleanBase64, 'base64');
 
@@ -71,45 +70,17 @@ module.exports = async (req, res) => {
             throw new Error('Invalid JSON response');
         }
 
-        console.log('📄 Full Response:', JSON.stringify(data, null, 2));
+        console.log('📄 Response:', JSON.stringify(data));
 
-        // ========== HANDLE RESPONSE ==========
-        
-        // 1. Cek response sukses dengan assetId
-        let assetId = data?.assetId || data?.data?.assetId || data?.id || null;
-        
-        // 2. Cek operationId untuk async upload
-        let operationId = data?.operationId || null;
-        
-        // 3. Cek error code 0 (ini sebenarnya sukses!)
-        if (!assetId && !operationId && data?.errors) {
-            const errorCode = data.errors[0]?.code;
-            const errorMsg = data.errors[0]?.message;
-            
-            if (errorCode === 0) {
-                console.log('✅ Upload sukses! (code:0)');
-                
-                // Coba cari asset terbaru dari creator
-                console.log('🔍 Mencari asset terbaru...');
-                const searchResult = await findLatestAsset(API_KEY);
-                if (searchResult) {
-                    return res.status(200).json({
-                        success: true,
-                        assetId: searchResult.id.toString(),
-                        assetUrl: `https://www.roblox.com/library/${searchResult.id}`,
-                        message: 'Upload berhasil!'
-                    });
-                }
-                
-                // Kalau tidak ditemukan, tetap return success
-                return res.status(200).json({
-                    success: true,
-                    assetId: null,
-                    message: 'Upload berhasil! Cek di Creator Dashboard',
-                    rawResponse: data
-                });
-            }
+        // ========== CEK ERROR ==========
+        if (!response.ok) {
+            const errorMsg = data.message || data.error?.message || JSON.stringify(data);
+            throw new Error(errorMsg);
         }
+
+        // ========== CEK ASSET ID ==========
+        let assetId = data?.assetId || data?.data?.assetId || data?.id || null;
+        let operationId = data?.operationId || null;
 
         // ========== POLLING ==========
         if (operationId) {
@@ -136,6 +107,31 @@ module.exports = async (req, res) => {
             }
         }
 
+        // ========== KALAU CODE 0 ==========
+        if (!assetId && data?.errors && data.errors[0]?.code === 0) {
+            console.log('✅ Upload sukses (code:0), mencari asset terbaru...');
+            
+            // Coba cari asset terbaru
+            const latestAsset = await findLatestAsset(API_KEY);
+            if (latestAsset && latestAsset.id) {
+                return res.status(200).json({
+                    success: true,
+                    assetId: latestAsset.id.toString(),
+                    assetUrl: `https://www.roblox.com/library/${latestAsset.id}`,
+                    message: 'Upload berhasil! Asset ditemukan.',
+                    assetName: latestAsset.displayName
+                });
+            }
+            
+            // Kalau belum ketemu, kasih tahu user
+            return res.status(200).json({
+                success: true,
+                assetId: null,
+                message: 'Upload berhasil! Tunggu 1-2 menit lalu refresh dashboard.',
+                rawResponse: data
+            });
+        }
+
         // ========== RESPONSE FINAL ==========
         if (assetId) {
             return res.status(200).json({
@@ -145,7 +141,6 @@ module.exports = async (req, res) => {
                 message: 'Upload berhasil!'
             });
         } else {
-            // Kalau sudah sampai sini dan tidak ada assetId
             return res.status(200).json({
                 success: true,
                 assetId: null,
@@ -166,12 +161,18 @@ module.exports = async (req, res) => {
 // ========== FUNGSI MENCARI ASSET TERBARU ==========
 async function findLatestAsset(apiKey) {
     try {
-        const response = await fetch('https://apis.roblox.com/cloud/v2/assets?limit=1&order=desc', {
+        // Coba cari asset terbaru milik creator
+        const response = await fetch('https://apis.roblox.com/cloud/v2/assets?limit=5&order=desc', {
             headers: { 'x-api-key': apiKey }
         });
+        
+        if (!response.ok) return null;
+        
         const data = await response.json();
+        console.log('📊 Latest assets:', JSON.stringify(data));
         
         if (data?.data && data.data.length > 0) {
+            // Ambil asset paling baru
             return data.data[0];
         }
         return null;
