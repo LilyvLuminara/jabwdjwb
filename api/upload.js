@@ -29,9 +29,10 @@ module.exports = async (req, res) => {
         const cleanBase64 = fileData.replace(/\s/g, '').replace(/\n/g, '').replace(/\r/g, '');
         const fileBuffer = Buffer.from(cleanBase64, 'base64');
 
-        if (fileBuffer.length < 10) {
-            return res.status(400).json({ success: false, error: 'File terlalu kecil' });
-        }
+        // HAPUS validasi minimum size (biarkan file kecil untuk testing)
+        // if (fileBuffer.length < 10) {
+        //     return res.status(400).json({ success: false, error: 'File terlalu kecil' });
+        // }
 
         console.log(`📤 Upload: ${fileName || 'model.rbxm'}, ${fileBuffer.length} bytes`);
 
@@ -72,34 +73,35 @@ module.exports = async (req, res) => {
 
         console.log('📄 Response:', JSON.stringify(data));
 
-        // ========== CEK RESPONSE ==========
-        
-        // 1. CEK: Apakah response mengandung errors dengan code 0?
+        // ========== CEK KODE 0 = SUKSES ==========
         if (data?.errors && data.errors[0]?.code === 0) {
-            console.log('✅ UPLOAD SUKSES! (code:0)');
+            console.log('✅ Upload sukses (code:0)');
             
-            // Coba cari asset terbaru
-            const latestAsset = await findLatestAsset(API_KEY);
-            if (latestAsset && latestAsset.id) {
-                return res.status(200).json({
-                    success: true,
-                    assetId: latestAsset.id.toString(),
-                    assetUrl: `https://www.roblox.com/library/${latestAsset.id}`,
-                    message: 'Upload berhasil! Asset ditemukan.',
-                    assetName: latestAsset.displayName
-                });
+            // Coba cari asset terbaru (5 kali percobaan)
+            for (let attempt = 0; attempt < 5; attempt++) {
+                await new Promise(resolve => setTimeout(resolve, 3000));
+                const latest = await findLatestAsset(API_KEY);
+                if (latest && latest.id) {
+                    return res.status(200).json({
+                        success: true,
+                        assetId: latest.id.toString(),
+                        assetUrl: `https://www.roblox.com/library/${latest.id}`,
+                        message: 'Upload berhasil!',
+                        assetName: latest.displayName
+                    });
+                }
+                console.log(`⏳ Attempt ${attempt + 1}/5: Asset belum muncul`);
             }
             
-            // Kalau belum ketemu, tetap return success
             return res.status(200).json({
                 success: true,
                 assetId: null,
-                message: 'Upload berhasil! Tunggu 1-2 menit, asset akan muncul di Creator Dashboard',
-                hint: 'Buka https://create.roblox.com/dashboard/creations'
+                message: 'Upload berhasil! Asset sedang diproses.',
+                hint: 'Buka https://create.roblox.com/dashboard/creations dalam 1-2 menit'
             });
         }
-        
-        // 2. CEK: Apakah ada assetId langsung?
+
+        // ========== CEK ASSET ID LANGSUNG ==========
         let assetId = data?.assetId || data?.data?.assetId || data?.id || null;
         if (assetId) {
             return res.status(200).json({
@@ -109,8 +111,8 @@ module.exports = async (req, res) => {
                 message: 'Upload berhasil!'
             });
         }
-        
-        // 3. CEK: Apakah ada operationId?
+
+        // ========== CEK OPERATION ID ==========
         let operationId = data?.operationId || null;
         if (operationId) {
             console.log(`⏳ Polling: ${operationId}`);
@@ -144,7 +146,7 @@ module.exports = async (req, res) => {
             }
         }
 
-        // 4. KALAU SEMUA GAGAL, tapi status response OK
+        // ========== RESPONSE DEFAULT ==========
         if (response.ok) {
             return res.status(200).json({
                 success: true,
@@ -154,7 +156,6 @@ module.exports = async (req, res) => {
             });
         }
 
-        // 5. ERROR NYATA
         throw new Error(data.message || data.error?.message || JSON.stringify(data));
 
     } catch (error) {
