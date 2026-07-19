@@ -11,30 +11,33 @@ module.exports = async (req, res) => {
     }
 
     if (req.method !== 'POST') {
-        return res.status(405).json({ error: 'Method Not Allowed' });
+        return res.status(405).json({ success: false, error: 'Method Not Allowed' });
     }
 
     const API_KEY = process.env.ROBLOX_API_KEY;
     if (!API_KEY) {
-        return res.status(500).json({ error: 'API_KEY missing' });
+        return res.status(500).json({ success: false, error: 'API_KEY missing' });
     }
 
     try {
         const { fileData, fileName, assetName, description } = req.body;
 
         if (!fileData) {
-            return res.status(400).json({ error: 'fileData is required' });
+            return res.status(400).json({ success: false, error: 'fileData is required' });
         }
 
         const cleanBase64 = fileData.replace(/\s/g, '').replace(/\n/g, '').replace(/\r/g, '');
         const fileBuffer = Buffer.from(cleanBase64, 'base64');
 
         if (fileBuffer.length < 10) {
-            return res.status(400).json({ error: 'File terlalu kecil' });
+            return res.status(400).json({ success: false, error: 'File terlalu kecil' });
         }
+
+        console.log(`📤 Upload: ${fileName || 'model.rbxm'}, ${fileBuffer.length} bytes`);
 
         const form = new FormData();
         
+        // ========== FORMAT METADATA YANG BENAR ==========
         const assetMetadata = {
             creator: {
                 type: process.env.CREATOR_TYPE || 'user',
@@ -48,7 +51,7 @@ module.exports = async (req, res) => {
         form.append('request', JSON.stringify(assetMetadata));
         form.append('fileContent', fileBuffer, {
             filename: fileName || 'model.rbxm',
-            contentType: 'model/x-rbxm'
+            contentType: 'model/x-rbxm'  // PASTIKAN INI
         });
 
         const response = await fetch('https://apis.roblox.com/cloud/v2/assets', {
@@ -68,15 +71,31 @@ module.exports = async (req, res) => {
             throw new Error('Invalid JSON response');
         }
 
+        console.log('📄 Response:', JSON.stringify(data));
+
         if (!response.ok) {
             const errorMsg = data.message || data.error?.message || JSON.stringify(data);
             throw new Error(errorMsg);
         }
 
-        let assetId = data?.assetId || data?.data?.assetId || data?.id || null;
-        let operationId = data?.operationId || null;
+        // ========== CEK RESPONSE ==========
+        let assetId = null;
+        let operationId = null;
 
+        // Cek berbagai format
+        if (data?.assetId) {
+            assetId = data.assetId;
+        } else if (data?.data?.assetId) {
+            assetId = data.data.assetId;
+        } else if (data?.id) {
+            assetId = data.id;
+        } else if (data?.operationId) {
+            operationId = data.operationId;
+        }
+
+        // ========== POLLING ==========
         if (operationId) {
+            console.log(`⏳ Polling: ${operationId}`);
             for (let i = 0; i < 15; i++) {
                 await new Promise(resolve => setTimeout(resolve, 3000));
                 try {
@@ -84,7 +103,12 @@ module.exports = async (req, res) => {
                         headers: { 'x-api-key': API_KEY }
                     });
                     const pollData = await pollRes.json();
+                    console.log(`📊 Poll ${i+1}:`, JSON.stringify(pollData));
+                    
                     if (pollData?.done === true) {
+                        if (pollData.error) {
+                            throw new Error(`Polling error: ${pollData.error.message}`);
+                        }
                         assetId = pollData?.response?.assetId || pollData?.result?.assetId || null;
                         break;
                     }
@@ -94,6 +118,7 @@ module.exports = async (req, res) => {
             }
         }
 
+        // ========== RESPONSE ==========
         if (assetId) {
             return res.status(200).json({
                 success: true,
@@ -102,12 +127,18 @@ module.exports = async (req, res) => {
                 message: 'Upload berhasil!'
             });
         } else {
-            return res.status(200).json({
-                success: true,
-                assetId: null,
-                message: 'Upload diproses, cek Creator Dashboard',
-                rawResponse: data
-            });
+            // Cek kasus code:0 (sukses tapi no assetId)
+            if (data?.errors && data.errors[0]?.code === 0) {
+                console.log('⚠️ Upload sukses tapi tidak ada assetId di response');
+                return res.status(200).json({
+                    success: true,
+                    assetId: null,
+                    message: 'Upload berhasil! Cek di Creator Dashboard',
+                    rawResponse: data
+                });
+            }
+            
+            throw new Error(`Tidak ada assetId: ${JSON.stringify(data)}`);
         }
 
     } catch (error) {
