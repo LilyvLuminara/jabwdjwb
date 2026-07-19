@@ -72,17 +72,46 @@ module.exports = async (req, res) => {
 
         console.log('📄 Response:', JSON.stringify(data));
 
-        // ========== CEK ERROR ==========
-        if (!response.ok) {
-            const errorMsg = data.message || data.error?.message || JSON.stringify(data);
-            throw new Error(errorMsg);
+        // ========== CEK RESPONSE ==========
+        
+        // 1. CEK: Apakah response mengandung errors dengan code 0?
+        if (data?.errors && data.errors[0]?.code === 0) {
+            console.log('✅ UPLOAD SUKSES! (code:0)');
+            
+            // Coba cari asset terbaru
+            const latestAsset = await findLatestAsset(API_KEY);
+            if (latestAsset && latestAsset.id) {
+                return res.status(200).json({
+                    success: true,
+                    assetId: latestAsset.id.toString(),
+                    assetUrl: `https://www.roblox.com/library/${latestAsset.id}`,
+                    message: 'Upload berhasil! Asset ditemukan.',
+                    assetName: latestAsset.displayName
+                });
+            }
+            
+            // Kalau belum ketemu, tetap return success
+            return res.status(200).json({
+                success: true,
+                assetId: null,
+                message: 'Upload berhasil! Tunggu 1-2 menit, asset akan muncul di Creator Dashboard',
+                hint: 'Buka https://create.roblox.com/dashboard/creations'
+            });
         }
-
-        // ========== CEK ASSET ID ==========
+        
+        // 2. CEK: Apakah ada assetId langsung?
         let assetId = data?.assetId || data?.data?.assetId || data?.id || null;
+        if (assetId) {
+            return res.status(200).json({
+                success: true,
+                assetId: assetId.toString(),
+                assetUrl: `https://www.roblox.com/library/${assetId}`,
+                message: 'Upload berhasil!'
+            });
+        }
+        
+        // 3. CEK: Apakah ada operationId?
         let operationId = data?.operationId || null;
-
-        // ========== POLLING ==========
         if (operationId) {
             console.log(`⏳ Polling: ${operationId}`);
             for (let i = 0; i < 15; i++) {
@@ -99,6 +128,14 @@ module.exports = async (req, res) => {
                             throw new Error(`Polling error: ${pollData.error.message}`);
                         }
                         assetId = pollData?.response?.assetId || pollData?.result?.assetId || null;
+                        if (assetId) {
+                            return res.status(200).json({
+                                success: true,
+                                assetId: assetId.toString(),
+                                assetUrl: `https://www.roblox.com/library/${assetId}`,
+                                message: 'Upload berhasil!'
+                            });
+                        }
                         break;
                     }
                 } catch (e) {
@@ -107,40 +144,8 @@ module.exports = async (req, res) => {
             }
         }
 
-        // ========== KALAU CODE 0 ==========
-        if (!assetId && data?.errors && data.errors[0]?.code === 0) {
-            console.log('✅ Upload sukses (code:0), mencari asset terbaru...');
-            
-            // Coba cari asset terbaru
-            const latestAsset = await findLatestAsset(API_KEY);
-            if (latestAsset && latestAsset.id) {
-                return res.status(200).json({
-                    success: true,
-                    assetId: latestAsset.id.toString(),
-                    assetUrl: `https://www.roblox.com/library/${latestAsset.id}`,
-                    message: 'Upload berhasil! Asset ditemukan.',
-                    assetName: latestAsset.displayName
-                });
-            }
-            
-            // Kalau belum ketemu, kasih tahu user
-            return res.status(200).json({
-                success: true,
-                assetId: null,
-                message: 'Upload berhasil! Tunggu 1-2 menit lalu refresh dashboard.',
-                rawResponse: data
-            });
-        }
-
-        // ========== RESPONSE FINAL ==========
-        if (assetId) {
-            return res.status(200).json({
-                success: true,
-                assetId: assetId.toString(),
-                assetUrl: `https://www.roblox.com/library/${assetId}`,
-                message: 'Upload berhasil!'
-            });
-        } else {
+        // 4. KALAU SEMUA GAGAL, tapi status response OK
+        if (response.ok) {
             return res.status(200).json({
                 success: true,
                 assetId: null,
@@ -148,6 +153,9 @@ module.exports = async (req, res) => {
                 rawResponse: data
             });
         }
+
+        // 5. ERROR NYATA
+        throw new Error(data.message || data.error?.message || JSON.stringify(data));
 
     } catch (error) {
         console.error('❌ Error:', error.message);
@@ -161,8 +169,7 @@ module.exports = async (req, res) => {
 // ========== FUNGSI MENCARI ASSET TERBARU ==========
 async function findLatestAsset(apiKey) {
     try {
-        // Coba cari asset terbaru milik creator
-        const response = await fetch('https://apis.roblox.com/cloud/v2/assets?limit=5&order=desc', {
+        const response = await fetch('https://apis.roblox.com/cloud/v2/assets?limit=5', {
             headers: { 'x-api-key': apiKey }
         });
         
@@ -172,7 +179,6 @@ async function findLatestAsset(apiKey) {
         console.log('📊 Latest assets:', JSON.stringify(data));
         
         if (data?.data && data.data.length > 0) {
-            // Ambil asset paling baru
             return data.data[0];
         }
         return null;
